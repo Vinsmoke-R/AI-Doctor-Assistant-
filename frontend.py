@@ -3,6 +3,7 @@ import requests
 import base64
 from langchain_core.messages import HumanMessage, AIMessage
 from llm_service import llm
+import os
 
 # from dotenv import load_dotenv
 # import os
@@ -16,7 +17,7 @@ vector_store = None
 # client = MongoClient(os.getenv("MONGO_URI"))
 # db = client["ai_doctor"]
 # collection = db["patients"]
-API_URL = "http://localhost:8000"
+API_URL = os.getenv("API_URL", "http://localhost:8000")
 
 st.set_page_config(page_title="AI Doctor Assistant", page_icon="🏥", layout="wide")
 st.title("🏥 AI Doctor Assistant — Patient Management")
@@ -102,6 +103,7 @@ if menu == "➕ Add Patient":
                 st.success("Patient registered successfully!")
                 st.info(f"**UID:** `{data['patient']['uid']}`  — save this to look up the patient later.")
                 st.json(data["patient"])
+                st.session_state.num_reports = 1 
             else:
                 st.error(f"Error: {res.text}")
 
@@ -185,26 +187,33 @@ elif menu == "🔍 Search by UID":
             vector_store = None
             if p.get("reports"):
                 for report in p["reports"]:
-                    # doing ocr
-                    text1 = extract_text(report['file_data'])
-                    text2 = llm_extraction(text1)
-                    text3 = mongo_doc_to_text(text2)
+                    with st.spinner(f"Processing {report['file_name']}..."):
+                        try:
+                            # doing ocr
+                            text1 = extract_text(report['file_data'])
+                            text2 = llm_extraction(text1)
+                            text3 = mongo_doc_to_text(text2)
 
-                    if vector_store is None:
-                        # build on first iteration
-                        vector_store = build_vector_store([text2]) # give doc as input 
-                    else:
-                        # add to existing store
-                        vector_store.add_texts([text3], metadatas=[{"file_name": report['file_name']}])
-
-                    # display reports
-                    st.subheader(f"**{report['report_type']}** — `{report['file_name']}`")
-                    file_bytes = base64.b64decode(report["file_data"])
-                    if report["file_name"].lower().endswith((".png", ".jpg", ".jpeg")):
-                        st.image(file_bytes, caption=f"{report['report_type']} report")
+                            if vector_store is None:
+                                # build on first iteration
+                                vector_store = build_vector_store([text2]) # give doc as input 
+                            else:
+                                # add to existing store
+                                vector_store.add_texts([text3], metadatas=[{"file_name": report['file_name']}])
+                        except Exception as e:
+                            st.warning(f"⚠️ Could not process {report['file_name']}: {e}")
 
             st.session_state['vector_store'] = vector_store
         vector_store = st.session_state.get('vector_store')  # use cached version
+
+        #always show reports 
+        if p.get("reports"):
+            st.subheader("Reports")
+            for report in p["reports"]:
+                st.markdown(f"**{report['report_type']}** — `{report['file_name']}`")
+                file_bytes = base64.b64decode(report["file_data"])
+                if report["file_name"].lower().endswith((".png", ".jpg", ".jpeg")):
+                    st.image(file_bytes, caption=f"{report['report_type']} report")
 
         # reset chat if different patient (reload the previous text)
         if st.session_state.get('current_uid') != uid:
@@ -287,45 +296,64 @@ elif menu == "🔍 Search by UID":
 elif menu == "✏️ Update Patient":
     st.header("Update Patient Details")
     uid = st.text_input("Enter Patient UID to update")
-
+ 
     if uid:
         res = requests.get(f"{API_URL}/patients/{uid.strip()}")
         if res.status_code == 200:
             p = res.json()
             st.success(f"Editing: **{p['name']}**")
-
+ 
+            if "update_num_reports" not in st.session_state:
+                st.session_state.update_num_reports = 1
+ 
             with st.form("update_form"):
                 col1, col2 = st.columns(2)
                 with col1:
                     new_name    = st.text_input("Name", value=p["name"])
                     new_age     = st.number_input("Age", value=p["age"], min_value=0, max_value=150)
                     new_gender  = st.selectbox("Gender", ["Male", "Female", "Other"],
-                                               index=["Male","Female","Other"].index(p["gender"]))
+                                               index=["Male", "Female", "Other"].index(p["gender"]))
                 with col2:
                     new_bg      = st.text_input("Blood Group", value=p.get("blood_group") or "")
                     new_contact = st.text_input("Contact", value=p.get("contact") or "")
-
+ 
                 new_history = st.text_area("Medical History", value=p.get("medical_history") or "")
                 st.divider()
+ 
                 if p.get("reports"):
-                    st.subheader("Reports")
+                    st.subheader("Existing Reports")
                     for report in p["reports"]:
-                        st.subheader(f"**{report['report_type']}** — `{report['file_name']}`")
+                        st.markdown(f"**{report['report_type']}** — `{report['file_name']}`")
                         file_bytes = base64.b64decode(report["file_data"])
-                        # if it's an image
                         if report["file_name"].lower().endswith((".png", ".jpg", ".jpeg")):
                             st.image(file_bytes, caption=f"{report['report_type']} report")
-
-                # add delete and add files in a function 
-                add_report = st.form_submit_button("➕ Add Another Report")
-                if add_report:
-                    st.session_state.num_reports += 1
-                    st.rerun()
-
-
-                submitted   = st.form_submit_button("Save Changes", type="primary")
-
+ 
+                st.divider()
+                st.subheader("Add New Reports")
+                for i in range(st.session_state.update_num_reports):
+                    st.text_input(f"New Report Type {i+1}", key=f"upd_report_type_{i}")
+                    st.file_uploader(f"Upload New Report {i+1}", key=f"upd_report_file_{i}")
+ 
+                add_report = st.form_submit_button("➕ Add Another Report Field")
+                submitted  = st.form_submit_button("Save Changes", type="primary")
+ 
+            if add_report:
+                st.session_state.update_num_reports += 1
+                st.rerun()
+ 
             if submitted:
+                new_reports = []
+                for i in range(st.session_state.update_num_reports):
+                    r_type = st.session_state.get(f"upd_report_type_{i}", "")
+                    r_file = st.session_state.get(f"upd_report_file_{i}")
+                    if r_type and r_file:
+                        encoded = base64.b64encode(r_file.read()).decode("utf-8")
+                        new_reports.append({
+                            "report_type": r_type,
+                            "file_name": r_file.name,
+                            "file_data": encoded,
+                        })
+ 
                 payload = {
                     "name": new_name,
                     "age": new_age,
@@ -334,9 +362,13 @@ elif menu == "✏️ Update Patient":
                     "contact": new_contact or None,
                     "medical_history": new_history or None,
                 }
+                if new_reports:
+                    payload["reports"] = new_reports
+ 
                 res2 = requests.put(f"{API_URL}/patients/{uid.strip()}", json=payload)
                 if res2.status_code == 200:
                     st.success("Patient updated successfully!")
+                    st.session_state.update_num_reports = 1
                     st.json(res2.json()["patient"])
                 else:
                     st.error(f"Error: {res2.text}")
