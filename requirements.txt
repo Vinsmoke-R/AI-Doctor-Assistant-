@@ -1,0 +1,14 @@
+streamlit
+requests
+fastapi
+uvicorn
+pymongo
+python-dotenv
+pydantic
+langchain-core
+langchain-groq
+langchain-community
+pytesseract
+Pillow
+sentence-transformers
+faiss-cpu
