@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 llm = ChatGroq(
-    model="llama-3.3-70b-versatile",  # current and reliable
+    model="openai/gpt-oss-120b",  # current and reliable
     temperature=0,
     max_tokens = 2000,
 )
