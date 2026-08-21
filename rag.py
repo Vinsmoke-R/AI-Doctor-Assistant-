@@ -18,7 +18,9 @@ splitter = RecursiveCharacterTextSplitter(
     chunk_overlap=50,
     separators=["\n\n", "\n", ". ", " "]
 )
-
+# ── Config ───────────────────────────────────────────────────────
+RECENT_COUNT = 6          # always send the last N raw messages
+SUMMARY_THRESHOLD = 15
 
 # ── Stage 1: Chunking ──────────────────────────────────────────────
 def chunk_text(text: str) -> list[str]:
@@ -124,12 +126,55 @@ Relevant extract (concise):"""
     except Exception:
         return combined  # fallback to raw context on failure
 
+# ── Stage 7.5: Rolling Chat Summary (cached) ─────────────────────
+def summarize_history(old_messages: list) -> str:
+    if not old_messages:
+        return ""
+
+    convo_text = "\n".join(f"{m['role']}: {m['content']}" for m in old_messages)
+
+    prompt = f"""Summarize the key facts, names, and important details mentioned
+in this conversation between a doctor and an AI assistant about a patient.
+Keep it short (under 100 words). Only include information that would matter
+for answering future questions.
+
+Conversation:
+{convo_text}
+
+Summary:"""
+
+    try:
+        return llm.invoke(prompt).content.strip()
+    except Exception:
+        return ""
+
+def get_history_context(chat_history: list) -> tuple[list, str]:
+    """
+    Returns (recent_messages_to_send_raw, summary_of_older_messages).
+    Short conversations: no summarization at all, send everything raw.
+    Long conversations: cache the summary in session_state, only
+    re-summarize when the 'older' portion actually grows.
+    """
+    if len(chat_history) <= SUMMARY_THRESHOLD:
+        return chat_history, ""
+
+    recent = chat_history[-RECENT_COUNT:]
+    older = chat_history[:-RECENT_COUNT]
+
+    if (st.session_state.get('summary_covers') != len(older)):
+        st.session_state['chat_summary'] = summarize_history(older)
+        st.session_state['summary_covers'] = len(older)
+
+    return recent, st.session_state.get('chat_summary', "")
+
 
 # ── Stage 8: Prompt Assembly ────────────────────────────────────────
-def build_prompt(patient: dict, rag_context: str) -> str:
+def build_prompt(patient: dict, rag_context: str, summary_note: str = "") -> str:
     report_summary = "\n".join(
         f"- {r['report_type']}: {r['file_name']}" for r in patient.get("reports", [])
     ) or "none"
+
+    summary_block = f"\n\nSummary of earlier conversation: {summary_note}" if summary_note else ""
 
     return f"""You are an AI doctor assistant. Here is the patient's full profile:
 Name: {patient['name']}
@@ -140,7 +185,7 @@ Medical History: {patient.get('medical_history') or 'none'}
 Reports on file: {report_summary}
 
 Relevant Report Data:
-{rag_context}
+{rag_context}{summary_block}
 
 Answer all questions in context of this patient."""
 
@@ -160,12 +205,12 @@ def answer_query(vector_store, patient: dict, query: str, chat_history: list):
     else:
         rag_context = "No report lookup needed for this question." if vector_store else "No reports available."
 
-    system_prompt = build_prompt(patient, rag_context)
+    recent, summary_note = get_history_context(chat_history)
+
+    system_prompt = build_prompt(patient, rag_context, summary_note)
 
     messages = [HumanMessage(content=system_prompt)]
-    recent_history = chat_history[-10:]
-
-    for msg in recent_history:
+    for msg in recent:
         if msg["role"] == "user":
             messages.append(HumanMessage(content=msg["content"]))
         else:
