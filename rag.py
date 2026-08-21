@@ -4,6 +4,7 @@ from langchain_community.docstore.in_memory import InMemoryDocstore
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.messages import HumanMessage, AIMessage
 import faiss
+import streamlit as st 
 
 from llm_service import llm
 from vectorDB import mongo_doc_to_text
@@ -162,7 +163,9 @@ def answer_query(vector_store, patient: dict, query: str, chat_history: list):
     system_prompt = build_prompt(patient, rag_context)
 
     messages = [HumanMessage(content=system_prompt)]
-    for msg in chat_history:
+    recent_history = chat_history[-10:]
+
+    for msg in recent_history:
         if msg["role"] == "user":
             messages.append(HumanMessage(content=msg["content"]))
         else:
