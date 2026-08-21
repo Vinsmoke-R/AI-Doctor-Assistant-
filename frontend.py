@@ -10,7 +10,7 @@ import os
 # from pymongo import MongoClient
 from ocr_service import extract_text
 from llm_service import llm_extraction
-from vectorDB import mongo_doc_to_text, build_vector_store
+from rag import index_report, answer_query
 vector_store = None
 # load_dotenv()
 
@@ -192,14 +192,7 @@ elif menu == "🔍 Search by UID":
                             # doing ocr
                             text1 = extract_text(report['file_data'])
                             text2 = llm_extraction(text1)
-                            text3 = mongo_doc_to_text(text2)
-
-                            if vector_store is None:
-                                # build on first iteration
-                                vector_store = build_vector_store([text2]) # give doc as input 
-                            else:
-                                # add to existing store
-                                vector_store.add_texts([text3], metadatas=[{"file_name": report['file_name']}])
+                            vector_store = index_report(vector_store, text2, report['file_name'])
                         except Exception as e:
                             st.warning(f"⚠️ Could not process {report['file_name']}: {e}")
 
@@ -256,35 +249,11 @@ elif menu == "🔍 Search by UID":
             requests.post(f"{API_URL}/patients/{uid}/chat", json={"role": "user", "content": user_input})
 
             # LLM call integrated with MongoDB
-            report_summary = ""
-            if p.get("reports"):
-                report_summary = "\n".join(
-                    [f"- {r['report_type']}: {r['file_name']}" for r in p["reports"]]
-                )
-
-            system_context = f"""You are an AI doctor assistant. Here is the patient's full profile:
-            Name: {p['name']}
-            Age: {p['age']}
-            Gender: {p['gender']}
-            Blood Group: {p.get('blood_group') or 'not specified'}
-            Medical History: {p.get('medical_history') or 'none'}
-            Reports on file: {report_summary or 'none'}
-
-            Relevant Report Data:
-            {rag_context}
-
-            Answer all questions in context of this patient."""
-
-            messages = [HumanMessage(content=system_context)]
-            for msg in st.session_state['message_history']:
-                if msg["role"] == "user":
-                    messages.append(HumanMessage(content=msg["content"]))
-                else:
-                    messages.append(AIMessage(content=msg["content"]))
-
             with st.chat_message("assistant"):
                 ai_reply = st.write_stream(
-                    chunk.content for chunk in llm.stream(messages)
+                    chunk.content for chunk in answer_query(
+                        vector_store, p, user_input, st.session_state['message_history']
+                    )
                 )
 
             # save AI reply to backend
