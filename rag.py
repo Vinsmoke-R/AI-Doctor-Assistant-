@@ -1,16 +1,14 @@
 from sentence_transformers import SentenceTransformer, CrossEncoder
-from langchain_community.vectorstores import FAISS
-from langchain_community.docstore.in_memory import InMemoryDocstore
+from langchain_community.vectorstores import Chroma
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.messages import HumanMessage, AIMessage
-import faiss
 import streamlit as st 
 
+from chromaDB import build_vector_store, chroma_client, embedding_model
+
 from llm_service import llm
-from vectorDB import mongo_doc_to_text
 
 # ── Models (loaded once) ──────────────────────────────────────────
-embedding_model = SentenceTransformer("BAAI/bge-base-en-v1.5")
 reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 
 splitter = RecursiveCharacterTextSplitter(
@@ -28,34 +26,38 @@ def chunk_text(text: str) -> list[str]:
 
 
 # ── Stage 2: Indexing ──────────────────────────────────────────────
-def _new_empty_store():
-    sample_vector = embedding_model.encode(["init"])
-    embedding_dim = sample_vector.shape[1]
-    index = faiss.IndexFlatL2(embedding_dim)
-    return FAISS(
-        embedding_function=embedding_model.encode,
-        index=index,
-        docstore=InMemoryDocstore(),
-        index_to_docstore_id={}
+# def _new_empty_store():
+#     sample_vector = embedding_model.encode(["init"])
+#     embedding_dim = sample_vector.shape[1]
+#     index = faiss.IndexFlatL2(embedding_dim)
+#     return FAISS(
+#         embedding_function=embedding_model.encode,
+#         index=index,
+#         docstore=InMemoryDocstore(),
+#         index_to_docstore_id={}
+#     )
+
+# chroma vector store automatically create a vector store if there is None 
+# vector_store = client.get_or_create_collection(
+#         name="patient_documents"
+#     )
+
+def load_vector_store(uid: str):
+    """
+    Loads the persisted ChromaDB collection for a patient.
+    Returns None if patient has no stored vectors yet.
+    """
+    collection_name = f"patient_{uid}".replace("-", "_")
+    existing = [c.name for c in chroma_client.list_collections()]
+
+    if collection_name not in existing:
+        return None
+
+    return Chroma(
+        client=chroma_client,
+        collection_name=collection_name,
+        embedding_function=embedding_model.encode
     )
-
-def index_report(vector_store, report_dict: dict, file_name: str):
-    """
-    Takes the LLM-cleaned report dict, chunks it, embeds it, and adds it
-    to the given vector_store (creates one if None). Returns the store.
-    """
-    text = mongo_doc_to_text(report_dict)
-    chunks = chunk_text(text)
-    if not chunks:
-        return vector_store
-
-    metadatas = [{"file_name": file_name, "chunk_id": i} for i in range(len(chunks))]
-
-    if vector_store is None:
-        vector_store = _new_empty_store()
-
-    vector_store.add_texts(chunks, metadatas=metadatas)
-    return vector_store
 
 
 # ── Stage 3: Query Routing ──────────────────────────────────────────
