@@ -3,8 +3,8 @@ from langchain_core.messages import SystemMessage, HumanMessage
 import json
 
 from dotenv import load_dotenv
-
 load_dotenv()
+
 llm = ChatGroq(
     model="openai/gpt-oss-120b",  # current and reliable
     temperature=0,

@@ -56,7 +56,7 @@ def load_vector_store(uid: str):
     return Chroma(
         client=chroma_client,
         collection_name=collection_name,
-        embedding_function=embedding_model.encode
+        embedding_function=embedding_model
     )
 
 
