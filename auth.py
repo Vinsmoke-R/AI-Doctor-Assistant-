@@ -1,45 +1,109 @@
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.middleware.cors import CORSMiddleware
 from passlib.context import CryptContext
-from jose import jwt
-from datetime import datetime, timedelta
+from jose import jwt, JWTError
+from datetime import datetime, timedelta, timezone
+from pydantic import BaseModel
+import os, uuid
+from dotenv import load_dotenv
+load_dotenv()
 
-app    = FastAPI()
-pwd    = CryptContext(schemes=["bcrypt"])
-oauth2 = OAuth2PasswordBearer(tokenUrl="login")
-SECRET = "keep-this-safe"
+# ── Load from environment (never hardcode!) ──────────────────
+SECRET     = os.getenv("JWT_SECRET_KEY")
+ALGORITHM  = "HS256"
+TOKEN_TTL  = int(os.getenv("TOKEN_TTL_HOURS",8)) # here 8 is default value
 
-# ── fake db ──
-users = {}
+# ── App & security ────────────────────────────────────────────
+app   = FastAPI(title="Auth Demo")
+pwd   = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth = OAuth2PasswordBearer(tokenUrl="/login")
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],          # tighten this in production
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ── In-memory user store (replace with a real DB) ─────────────
+# Structure: { username: { id, hashed_password } }
+users_db: dict[str, dict] = {}
+
+# ── Schemas ───────────────────────────────────────────────────
+class RegisterRequest(BaseModel):
+    username: str
+    password: str
+
+class UserOut(BaseModel):
+    id: str
+    username: str
+
+# ── Helpers ───────────────────────────────────────────────────
+def make_token(username: str, user_id: str) -> str:
+    payload = {
+        "sub": username,
+        "uid": user_id,
+        "exp": datetime.now(timezone.utc) + timedelta(hours=TOKEN_TTL),
+    }
+    return jwt.encode(payload, SECRET, algorithm=ALGORITHM)
+
+def get_current_user(token: str = Depends(oauth)) -> dict:
+    try:
+        data = jwt.decode(token, SECRET, algorithms=[ALGORITHM])
+        username: str = data.get("sub")
+        if username is None or username not in users_db:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        return {"username": username, "id": data.get("uid")}
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Token expired or invalid")
+
+# ── Routes ────────────────────────────────────────────────────
 @app.get("/")
 def root():
-    return {"message":"Auth is working"}
+    return {"message": "Auth API is live"}
 
-# ── register ──
-@app.post("/register")
-def register(username: str, password: str):
-    users[username] = pwd.hash(password)
-    return {"msg": "registered"}
+@app.post("/register", status_code=201)
+def register(body: RegisterRequest):
+    if body.username in users_db:
+        raise HTTPException(status_code=409, detail="Username already taken")
+    if len(body.password) < 6:
+        raise HTTPException(status_code=422, detail="Password must be at least 6 characters")
 
-# ── login ──
+    user_id = str(uuid.uuid4())
+    users_db[body.username] = {
+        "id":              user_id,
+        "hashed_password": pwd.hash(body.password),
+    }
+
+    token = make_token(body.username, user_id)
+    return {
+        "msg":          "Account created",
+        "access_token": token,
+        "token_type":   "bearer",
+        "user":         {"id": user_id, "username": body.username},
+    }
+
 @app.post("/login")
 def login(form: OAuth2PasswordRequestForm = Depends()):
-    hashed = users.get(form.username)
-    if not hashed or not pwd.verify(form.password, hashed):
-        raise HTTPException(status_code=401, detail="Wrong credentials")
-    
-    token = jwt.encode({
-        "sub": form.username,
-        "exp": datetime.utcnow() + timedelta(hours=8)
-    }, SECRET)
-    return {"access_token": token, "token_type": "bearer"}
+    record = users_db.get(form.username)
+    if not record or not pwd.verify(form.password, record["hashed_password"]):
+        raise HTTPException(status_code=401, detail="Wrong username or password")
 
-# ── protect route ──
-def get_user(token = Depends(oauth2)):
-    data = jwt.decode(token, SECRET, algorithms=["HS256"])
-    return data["sub"]
+    token = make_token(form.username, record["id"])
+    return {
+        "access_token": token,
+        "token_type":   "bearer",
+        "user":         {"id": record["id"], "username": form.username},
+    }
+
+@app.get("/me", response_model=UserOut)
+def me(current_user: dict = Depends(get_current_user)):
+    return {"id": current_user["id"], "username": current_user["username"]}
 
 @app.get("/patients")
-def get_patients(user = Depends(get_user)):
-    return {"user": user, "patients": []}
+def get_patients(current_user: dict = Depends(get_current_user)):
+    return {
+        "requested_by": current_user["username"],
+        "patients":     [],          # replace with real DB query
+    }
