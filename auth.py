@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel
 import os, uuid
 from dotenv import load_dotenv
+from pymongo import MongoClient
+
 load_dotenv()
 
 # ── Load from environment (never hardcode!) ──────────────────
@@ -28,7 +30,16 @@ app.add_middleware(
 
 # ── In-memory user store (replace with a real DB) ─────────────
 # Structure: { username: { id, hashed_password } }
-users_db: dict[str, dict] = {}
+# users_db: dict[str, dict] = {}
+
+client = MongoClient(os.getenv("MONGO_URI"))
+db = client["ai_doctor"]
+users = db["users"]            # new, created on first register
+patients= db["patients"]         # existing
+chat_collection = db["chat_history"]     # existing
+
+users.create_index("username", unique=True)
+
 
 # ── Schemas ───────────────────────────────────────────────────
 class RegisterRequest(BaseModel):
@@ -52,7 +63,7 @@ def get_current_user(token: str = Depends(oauth)) -> dict:
     try:
         data = jwt.decode(token, SECRET, algorithms=[ALGORITHM])
         username: str = data.get("sub")
-        if username is None or username not in users_db:
+        if username is None or not users.find_one({"username": username}, {"_id": 1}):
             raise HTTPException(status_code=401, detail="Invalid token")
         return {"username": username, "id": data.get("uid")}
     except JWTError:
@@ -65,16 +76,17 @@ def root():
 
 @app.post("/register", status_code=201)
 def register(body: RegisterRequest):
-    if body.username in users_db:
+    if users.find_one({"username": body.username}, {"_id": 1}):
         raise HTTPException(status_code=409, detail="Username already taken")
     if len(body.password) < 6:
         raise HTTPException(status_code=422, detail="Password must be at least 6 characters")
 
     user_id = str(uuid.uuid4())
-    users_db[body.username] = {
-        "id":              user_id,
+    result = users.insert_one({
+        "username":        body.username,
         "hashed_password": pwd.hash(body.password),
-    }
+    })
+    user_id = str(result.inserted_id)
 
     token = make_token(body.username, user_id)
     return {
@@ -86,15 +98,16 @@ def register(body: RegisterRequest):
 
 @app.post("/login")
 def login(form: OAuth2PasswordRequestForm = Depends()):
-    record = users_db.get(form.username)
+    record = users.find_one({"username":form.username})
     if not record or not pwd.verify(form.password, record["hashed_password"]):
         raise HTTPException(status_code=401, detail="Wrong username or password")
 
-    token = make_token(form.username, record["id"])
+    user_id = str(record["_id"])
+    token = make_token(form.username, user_id)
     return {
         "access_token": token,
-        "token_type":   "bearer",
-        "user":         {"id": record["id"], "username": form.username},
+        "token_type":"bearer",
+        "user":{"id": user_id, "username": form.username},
     }
 
 @app.get("/me", response_model=UserOut)
@@ -103,7 +116,5 @@ def me(current_user: dict = Depends(get_current_user)):
 
 @app.get("/patients")
 def get_patients(current_user: dict = Depends(get_current_user)):
-    return {
-        "requested_by": current_user["username"],
-        "patients":     [],          # replace with real DB query
-    }
+    docs = list(patients.find({}, {"_id": 0}).sort("created_at", -1))
+    return {"requested_by": current_user["username"], "count": len(docs), "patients": docs}

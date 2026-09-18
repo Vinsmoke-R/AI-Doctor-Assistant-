@@ -24,6 +24,7 @@ app.add_middleware(
 client = MongoClient(os.getenv("MONGO_URI"))
 db = client["ai_doctor"]
 collection = db["patients"]
+users = db["users"] 
 chat_collection = db["chat_history"]
 
 
