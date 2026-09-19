@@ -5,7 +5,7 @@ from passlib.context import CryptContext
 from jose import jwt, JWTError
 from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel
-import os, uuid
+import os
 from dotenv import load_dotenv
 from pymongo import MongoClient
 
@@ -23,9 +23,11 @@ oauth = OAuth2PasswordBearer(tokenUrl="/login")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],          # tighten this in production
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=os.getenv("ALLOWED_ORIGINS", "").split(","),
+    allow_methods=["GET", "POST"],
+    allow_headers=["Authorization", "Content-Type"],
+    allow_credentials=True,
+    max_age=3600,
 )
 
 # ── In-memory user store (replace with a real DB) ─────────────
@@ -81,7 +83,7 @@ def register(body: RegisterRequest):
     if len(body.password) < 6:
         raise HTTPException(status_code=422, detail="Password must be at least 6 characters")
 
-    user_id = str(uuid.uuid4())
+    # user_id = str(uuid.uuid4())
     result = users.insert_one({
         "username":        body.username,
         "hashed_password": pwd.hash(body.password),
